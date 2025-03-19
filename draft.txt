@@ -1,0 +1,166 @@
+import pandas as pd
+from haversine import haversine
+
+# Sample data
+data = pd.DataFrame({
+    'BaseDateTime': ['2022-03-31T00:00:01', '2022-03-31T00:00:06', '2022-03-31T00:00:09',
+                     '2022-03-31T00:00:00', '2022-03-31T00:00:01', '2022-03-31T00:00:04',
+                     '2022-03-31T00:00:00', '2022-03-31T00:00:07', '2022-03-31T00:00:04',
+                     '2022-03-31T00:00:01', '2022-03-31T00:00:05', '2022-03-31T00:00:09',
+                     '2022-03-31T00:00:01', '2022-03-31T00:00:01', '2022-03-31T00:00:01',
+                     '2022-03-31T00:00:01'],
+    'IMO': ['IMO9221322', 'IMO9602344', 'IMO9253583', 'IMO8916607', 'IMO9411305',
+            'IMO9304411', 'IMO8512889', 'IMO739103200', 'IMO7621839', 'IMO9260756',
+            'IMO9867803', 'IMO7802627', 'IMO367432090', 'IMO9137363', 'IMO9190951',
+            'IMO9698288'],
+    'LAT': [25.77626, 29.32824, 48.74428, 18.55833, 28.66703, 29.18968,
+            26.06004, 28.40915, 18.00574, 29.54576, 28.18381, 46.08923,
+            29.78887, 47.79657, 28.41571, 18.24838],
+    'LON': [-80.2032, -94.77391, -122.49504, -66.4791, -93.59339, -94.63571,
+            -80.13008, -80.66608, -66.7651, -90.70128, -94.41764, -122.9286,
+            -92.14719, -122.46426, -80.62341, -64.61832],
+    'SOG': [3.2, 2.6, 0.0, 17.5, 9.5, 0.2, 0.0, 0.0, 0.1, 0.0, 10.1, 0.0, 0.0, 17.8, 0.0, 10.4],
+    'COG': [143.7, 319.2, 210.3, 274.5, 129.4, 193.5, 46.4, 302.3, 232.9, 231.7, 182.2, 250.0, 269.5, 217.6, 270.1, 244.6]
+})
+
+# Convert datetime and sort
+data['BaseDateTime'] = pd.to_datetime(data['BaseDateTime'])
+data = data.sort_values(['IMO', 'BaseDateTime'])
+
+# Track splitting parameters
+DISTANCE_THRESHOLD = 2.0  # Kilometers
+
+def assign_track_ids(group):
+    group = group.copy()
+    track_id = 1
+    prev_lat, prev_lon = None, None
+    group['track_id'] = 1  # Initialize track_id
+    
+    for idx, row in group.iterrows():
+        if prev_lat is not None:
+            distance = haversine((prev_lat, prev_lon), (row['LAT'], row['LON']))
+            if distance > DISTANCE_THRESHOLD:
+                track_id += 1
+        group.at[idx, 'track_id'] = track_id
+        prev_lat, prev_lon = row['LAT'], row['LON']
+    return group
+
+# Assign track IDs
+data = data.groupby('IMO', group_keys=False).apply(assign_track_ids)
+
+
+
+
+def assign_direction(group):
+    # Get initial starting point (first point of the first track)
+    initial_lat = group['LAT'].iloc[0]
+    initial_lon = group['LON'].iloc[0]
+    
+    # For each track, compute distance from initial point
+    for track_id, track in group.groupby('track_id'):
+        start_lat, start_lon = track['LAT'].iloc[0], track['LON'].iloc[0]
+        end_lat, end_lon = track['LAT'].iloc[-1], track['LON'].iloc[-1]
+        
+        # Distance from initial point to track's start and end
+        d_start = haversine((initial_lat, initial_lon), (start_lat, start_lon))
+        d_end = haversine((initial_lat, initial_lon), (end_lat, end_lon))
+        
+        # Assign direction
+        direction = 'forward' if d_end > d_start else 'backward'
+        group.loc[group['track_id'] == track_id, 'direction'] = direction
+    return group
+
+# Assign direction labels
+data = data.groupby('IMO', group_keys=False).apply(assign_direction)
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+from haversine import haversine
+
+def calculate_metrics(group):
+    """
+    Calculate distance, velocity, and direction change for a vessel's trajectory.
+    
+    Args:
+        group (pd.DataFrame): A DataFrame group for a specific vessel (grouped by IMO).
+        
+    Returns:
+        pd.DataFrame: The input DataFrame with added columns for distance, velocity, and cog_diff.
+    """
+    # Sort the vessel's data by timestamp to ensure chronological order
+    group = group.sort_values('BaseDateTime').reset_index(drop=True)
+    
+    # Calculate distance between consecutive points using Haversine formula
+    # ---------------------------------------------------------------------
+    # Shift latitude and longitude to align current and previous points
+    group['prev_lat'] = group['LAT'].shift(1)
+    group['prev_lon'] = group['LON'].shift(1)
+    
+    # Compute distance (in kilometers) using Haversine formula
+    group['distance'] = group.apply(
+        lambda row: haversine(
+            (row['prev_lat'], row['prev_lon']),  # Previous point
+            (row['LAT'], row['LON']),            # Current point
+            unit='km'
+        ) if not pd.isnull(row['prev_lat']) else 0,  # Handle first row (no previous point)
+        axis=1
+    )
+    
+    # Calculate time difference between consecutive points (in seconds)
+    # -----------------------------------------------------------------
+    group['prev_time'] = group['BaseDateTime'].shift(1)
+    group['time_diff'] = (group['BaseDateTime'] - group['prev_time']).dt.total_seconds().fillna(0)
+    
+    # Calculate velocity (km/h) from distance and time difference
+    # ----------------------------------------------------------
+    # Avoid division by zero by adding a small epsilon (1e-6 seconds)
+    group['velocity'] = (group['distance'] / (group['time_diff'] + 1e-6)) * 3600  # Convert to km/h
+    
+    # Calculate direction change (ΔCOG) between consecutive points
+    # ------------------------------------------------------------
+    group['prev_cog'] = group['COG'].shift(1).fillna(group['COG'])  # Use current COG if no previous
+    group['cog_diff'] = (group['COG'] - group['prev_cog']).abs()    # Absolute difference
+    
+    # Cleanup intermediate columns
+    group.drop(['prev_lat', 'prev_lon', 'prev_time', 'prev_cog'], axis=1, inplace=True)
+    
+    return group
+
+# Sample data (same as provided)
+data = pd.DataFrame({
+    'BaseDateTime': ['2022-03-31T00:00:01', '2022-03-31T00:00:06', '2022-03-31T00:00:09',
+                     '2022-03-31T00:00:00', '2022-03-31T00:00:01', '2022-03-31T00:00:04',
+                     '2022-03-31T00:00:00', '2022-03-31T00:00:07', '2022-03-31T00:00:04',
+                     '2022-03-31T00:00:01', '2022-03-31T00:00:05', '2022-03-31T00:00:09',
+                     '2022-03-31T00:00:01', '2022-03-31T00:00:01', '2022-03-31T00:00:01',
+                     '2022-03-31T00:00:01'],
+    'IMO': ['IMO9221322', 'IMO9602344', 'IMO9253583', 'IMO8916607', 'IMO9411305',
+            'IMO9304411', 'IMO8512889', 'IMO739103200', 'IMO7621839', 'IMO9260756',
+            'IMO9867803', 'IMO7802627', 'IMO367432090', 'IMO9137363', 'IMO9190951',
+            'IMO9698288'],
+    'LAT': [25.77626, 29.32824, 48.74428, 18.55833, 28.66703, 29.18968,
+            26.06004, 28.40915, 18.00574, 29.54576, 28.18381, 46.08923,
+            29.78887, 47.79657, 28.41571, 18.24838],
+    'LON': [-80.2032, -94.77391, -122.49504, -66.4791, -93.59339, -94.63571,
+            -80.13008, -80.66608, -66.7651, -90.70128, -94.41764, -122.9286,
+            -92.14719, -122.46426, -80.62341, -64.61832],
+    'SOG': [3.2, 2.6, 0.0, 17.5, 9.5, 0.2, 0.0, 0.0, 0.1, 0.0, 10.1, 0.0, 0.0, 17.8, 0.0, 10.4],
+    'COG': [143.7, 319.2, 210.3, 274.5, 129.4, 193.5, 46.4, 302.3, 232.9, 231.7, 182.2, 250.0, 269.5, 217.6, 270.1, 244.6]
+})
+
+# Preprocess data
+data['BaseDateTime'] = pd.to_datetime(data['BaseDateTime'])
+
+# Apply the function to each vessel's data
+result = data.groupby('IMO', group_keys=False).apply(calculate_metrics)
+
+# Display results
+print(result[['IMO', 'LAT', 'LON', 'distance', 'velocity', 'cog_diff']])
