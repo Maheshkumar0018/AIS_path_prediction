@@ -361,3 +361,149 @@ def assign_direction(group):
 data = data.groupby('IMO', group_keys=False).apply(assign_direction)
 
 print(data)
+
+
+============================
+
+
+import pandas as pd
+from haversine import haversine
+
+# Sample data (replace with your actual data)
+df = data.copy()
+
+# Define thresholds
+DISTANCE_THRESHOLD = 2.0  # Kilometers (adjust as needed)
+
+# Step 1: Get track boundaries
+track_boundaries = df.groupby(['IMO', 'track_id']).agg(
+    start_lat=('LAT', 'first'),
+    start_lon=('LON', 'first'),
+    end_lat=('LAT', 'last'),
+    end_lon=('LON', 'last'),
+    start_time=('BaseDateTime', 'first'),
+    end_time=('BaseDateTime', 'last')
+).reset_index()
+
+# Step 2: Sort tracks by start_time for chronological processing
+track_boundaries = track_boundaries.sort_values(['IMO', 'start_time'])
+
+# Step 3: Identify merges
+merge_map = {}
+current_group = 1
+
+for imo in track_boundaries['IMO'].unique():
+    imo_tracks = track_boundaries[track_boundaries['IMO'] == imo]
+    prev_track = None
+    
+    for _, row in imo_tracks.iterrows():
+        if prev_track is None:
+            # Initialize first track
+            merge_map[(imo, row['track_id'])] = current_group
+            prev_track = row
+        else:
+            # Calculate distance between end of previous track and start of current track
+            prev_end = (prev_track['end_lat'], prev_track['end_lon'])
+            curr_start = (row['start_lat'], row['start_lon'])
+            distance = haversine(prev_end, curr_start)
+            
+            if distance <= DISTANCE_THRESHOLD:
+                # Merge with previous group
+                merge_map[(imo, row['track_id'])] = merge_map[(imo, prev_track['track_id'])]
+            else:
+                # New group
+                current_group += 1
+                merge_map[(imo, row['track_id'])] = current_group
+                prev_track = row
+
+# Step 4: Apply merged track_ids to original DataFrame
+df['merged_track_id'] = df.apply(
+    lambda x: merge_map.get((x['IMO'], x['track_id']), x['track_id']), axis=1
+)
+
+# Optional: Drop the original track_id if needed
+df = df.drop(columns=['track_id']).rename(columns={'merged_track_id': 'track_id'})
+
+
+
+
+
+import pandas as pd
+from haversine import haversine
+
+# Load your DataFrame (replace with your data)
+df = data.copy()
+
+# Define merging parameters
+DISTANCE_THRESHOLD = 2.0  # Kilometers (adjust as needed)
+
+# Step 1: Get track boundaries (start/end points)
+track_info = df.groupby(['IMO', 'track_id']).agg(
+    start_lat=('LAT', 'first'),
+    start_lon=('LON', 'first'),
+    end_lat=('LAT', 'last'),
+    end_lon=('LON', 'last')
+).reset_index()
+
+# Step 2: For each IMO, check all track pairs
+from itertools import combinations
+
+def merge_tracks(imo_group):
+    tracks = imo_group.to_dict('records')
+    n = len(tracks)
+    parent = list(range(n))  # Union-Find data structure
+
+    def find(u):
+        while parent[u] != u:
+            parent[u] = parent[parent[u]]
+            u = parent[u]
+        return u
+
+    def union(u, v):
+        pu, pv = find(u), find(v)
+        if pu != pv:
+            parent[pv] = pu
+
+    # Check all track pairs
+    for i, j in combinations(range(n), 2):
+        track_i = tracks[i]
+        track_j = tracks[j]
+        
+        # Calculate distances between all combinations of start/end points
+        distances = [
+            haversine((track_i['end_lat'], track_i['end_lon']), 
+                     (track_j['start_lat'], track_j['start_lon'])),
+            haversine((track_i['start_lat'], track_i['start_lon']), 
+                     (track_j['end_lat'], track_j['end_lon'])),
+            haversine((track_i['end_lat'], track_i['end_lon']), 
+                     (track_j['end_lat'], track_j['end_lon'])),
+            haversine((track_i['start_lat'], track_i['start_lon']), 
+                     (track_j['start_lat'], track_j['start_lon']))
+        ]
+        
+        # Merge if any distance is below threshold
+        if min(distances) <= DISTANCE_THRESHOLD:
+            union(i, j)
+
+    # Assign merged track_id based on connected components
+    component = {}
+    for idx in range(n):
+        root = find(idx)
+        if root not in component:
+            component[root] = len(component) + 1
+        tracks[idx]['merged_track_id'] = component[root]
+
+    return pd.DataFrame(tracks)
+
+# Step 3: Apply merging to all IMO groups
+merged_tracks = track_info.groupby('IMO', group_keys=False).apply(merge_tracks)
+
+# Step 4: Map merged_track_id back to original DataFrame
+df = df.merge(
+    merged_tracks[['IMO', 'track_id', 'merged_track_id']],
+    on=['IMO', 'track_id'],
+    how='left'
+)
+
+# Optional: Rename the merged track_id
+df = df.drop(columns=['track_id']).rename(columns={'merged_track_id': 'track_id'})
