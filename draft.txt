@@ -260,3 +260,104 @@ def assign_direction(group):
 
 # Assign direction labels
 data = data.groupby('IMO', group_keys=False).apply(assign_direction)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+from haversine import haversine
+
+# Sample data
+data = pd.DataFrame({
+    'BaseDateTime': ['2022-03-31T00:00:01', '2022-03-31T00:00:06', '2022-03-31T00:00:09',
+                     '2022-03-31T00:00:00', '2022-03-31T00:00:01', '2022-03-31T00:00:04',
+                     '2022-03-31T00:00:00', '2022-03-31T00:00:07', '2022-03-31T00:00:04',
+                     '2022-03-31T00:00:01', '2022-03-31T00:00:05', '2022-03-31T00:00:09',
+                     '2022-03-31T00:00:01', '2022-03-31T00:00:01', '2022-03-31T00:00:01',
+                     '2022-03-31T00:00:01'],
+    'IMO': ['IMO9221322', 'IMO9602344', 'IMO9253583', 'IMO8916607', 'IMO9411305',
+            'IMO9304411', 'IMO8512889', 'IMO739103200', 'IMO7621839', 'IMO9260756',
+            'IMO9867803', 'IMO7802627', 'IMO367432090', 'IMO9137363', 'IMO9190951',
+            'IMO9698288'],
+    'LAT': [25.77626, 29.32824, 48.74428, 18.55833, 28.66703, 29.18968,
+            26.06004, 28.40915, 18.00574, 29.54576, 28.18381, 46.08923,
+            29.78887, 47.79657, 28.41571, 18.24838],
+    'LON': [-80.2032, -94.77391, -122.49504, -66.4791, -93.59339, -94.63571,
+            -80.13008, -80.66608, -66.7651, -90.70128, -94.41764, -122.9286,
+            -92.14719, -122.46426, -80.62341, -64.61832],
+    'SOG': [3.2, 2.6, 0.0, 17.5, 9.5, 0.2, 0.0, 0.0, 0.1, 0.0, 10.1, 0.0, 0.0, 17.8, 0.0, 10.4],
+    'COG': [143.7, 319.2, 210.3, 274.5, 129.4, 193.5, 46.4, 302.3, 232.9, 231.7, 182.2, 250.0, 269.5, 217.6, 270.1, 244.6]
+})
+
+# Convert datetime and sort
+data['BaseDateTime'] = pd.to_datetime(data['BaseDateTime'])
+data = data.sort_values(['BaseDateTime', 'IMO'])
+
+# Track splitting parameters
+DISTANCE_THRESHOLD = 2.0  # Kilometers
+TIME_THRESHOLD = pd.Timedelta(minutes=10)  # Adjust based on your needs
+
+# Function to assign track IDs considering proximity across IMOs
+def assign_track_ids(data):
+    data = data.copy()
+    data['track_id'] = None
+    track_id = 1
+
+    # Iterate through each timestamp
+    for timestamp, group in data.groupby('BaseDateTime'):
+        # Iterate through each point in the group
+        for idx, row in group.iterrows():
+            if pd.isna(data.at[idx, 'track_id']):  # If track_id is not assigned
+                data.at[idx, 'track_id'] = track_id
+                # Assign the same track_id to nearby points within the same timestamp
+                for idx2, row2 in group.iterrows():
+                    if pd.isna(data.at[idx2, 'track_id']):
+                        distance = haversine((row['LAT'], row['LON']), (row2['LAT'], row2['LON']))
+                        if distance <= DISTANCE_THRESHOLD:
+                            data.at[idx2, 'track_id'] = track_id
+                track_id += 1
+    return data
+
+# Assign track IDs considering proximity across IMOs
+data = assign_track_ids(data)
+
+# Function to assign direction labels
+def assign_direction(group):
+    # Get initial starting point (first point of the first track)
+    initial_lat = group['LAT'].iloc[0]
+    initial_lon = group['LON'].iloc[0]
+    
+    # For each track, compute distance from initial point
+    for track_id, track in group.groupby('track_id'):
+        start_lat, start_lon = track['LAT'].iloc[0], track['LON'].iloc[0]
+        end_lat, end_lon = track['LAT'].iloc[-1], track['LON'].iloc[-1]
+        
+        # Distance from initial point to track's start and end
+        d_start = haversine((initial_lat, initial_lon), (start_lat, start_lon))
+        d_end = haversine((initial_lat, initial_lon), (end_lat, end_lon))
+        
+        # Assign direction
+        direction = 'forward' if d_end > d_start else 'backward'
+        group.loc[group['track_id'] == track_id, 'direction'] = direction
+    return group
+
+# Assign direction labels
+data = data.groupby('IMO', group_keys=False).apply(assign_direction)
+
+print(data)
