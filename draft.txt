@@ -593,3 +593,101 @@ df = df.merge(
 
 # Optional: Rename the merged track_id
 df = df.drop(columns=['track_id']).rename(columns={'merged_track_id': 'track_id'})
+
+
+
+
+
+
+
+
+
+import pandas as pd
+from haversine import haversine
+from itertools import combinations
+
+# Load your DataFrame (replace with your data)
+df = data.copy()
+
+# Define merging parameters (SMALLER threshold for strict merging)
+DISTANCE_THRESHOLD = 0.1  # Now 100 meters (adjust as needed)
+
+# Step 1: Represent each track by its start, mid, and end points
+def get_key_points(group):
+    coords = list(zip(group['LAT'], group['LON']))
+    start = coords[0]
+    end = coords[-1]
+    mid = coords[len(coords) // 2]  # Midpoint
+    return pd.Series({
+        'start': start,
+        'mid': mid,
+        'end': end,
+    })
+
+track_key_points = df.groupby(['IMO', 'track_id']).apply(get_key_points).reset_index()
+
+# Step 2: For each IMO, check if tracks are VERY close (overlapping/near-touching)
+def merge_only_very_close_tracks(imo_group):
+    tracks = imo_group.to_dict('records')
+    n = len(tracks)
+    parent = list(range(n))  # Union-Find for connected components
+
+    def find(u):
+        while parent[u] != u:
+            parent[u] = parent[parent[u]]
+            u = parent[u]
+        return u
+
+    def union(u, v):
+        pu, pv = find(u), find(v)
+        if pu != pv:
+            parent[pv] = pu
+
+    # Check all track pairs for proximity
+    for i, j in combinations(range(n), 2):
+        track_i = tracks[i]
+        track_j = tracks[j]
+        
+        # Check if ANY key point (start/mid/end) is close to ANY key point in the other track
+        for point_i in [track_i['start'], track_i['mid'], track_i['end']]:
+            for point_j in [track_j['start'], track_j['mid'], track_j['end']]:
+                if haversine(point_i, point_j) <= DISTANCE_THRESHOLD:
+                    union(i, j)
+                    break  # No need to check further if merged
+            else:
+                continue
+            break  # Break outer loop if merged
+
+    # Assign merged_track_id based on connected components
+    component = {}
+    for idx in range(n):
+        root = find(idx)
+        if root not in component:
+            component[root] = len(component) + 1
+        tracks[idx]['merged_track_id'] = component[root]
+
+    return pd.DataFrame(tracks)
+
+# Step 3: Apply merging to all IMO groups
+merged_tracks = track_key_points.groupby('IMO', group_keys=False).apply(merge_only_very_close_tracks)
+
+# Step 4: Map merged_track_id back to original DataFrame
+df = df.merge(
+    merged_tracks[['IMO', 'track_id', 'merged_track_id']],
+    on=['IMO', 'track_id'],
+    how='left'
+)
+
+# Optional: Rename the merged track_id
+df = df.drop(columns=['track_id']).rename(columns={'merged_track_id': 'track_id'})
+
+
+
+
+
+
+
+
+
+
+
