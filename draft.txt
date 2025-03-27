@@ -690,4 +690,49 @@ df = df.drop(columns=['track_id']).rename(columns={'merged_track_id': 'track_id'
 
 
 
+import pandas as pd
+
+# Sample DataFrame
+data = {
+    "imo": [101, 102, 103, 101, 104, 105, 103, 106, 107, 108, 108],
+    "lat": [10.1, 10.2, 10.3, 10.1, 10.4, 10.5, 10.3, 10.6, 10.7, 10.8, 10.8],
+    "lon": [20.1, 20.2, 20.3, 20.1, 20.4, 20.5, 20.3, 20.6, 20.7, 20.8, 20.8],
+    "cong": [0.5, 0.6, 0.7, 0.5, 0.8, 0.9, 0.7, 1.0, 1.1, 1.2, 1.2],
+    "sog": [2.5, 3.0, 3.2, 2.5, 3.5, 3.8, 3.2, 4.0, 4.1, 4.3, 4.3],
+    "time": ["2024-03-01 10:00:00", "2024-03-01 10:05:00", "2024-03-01 10:10:00", 
+             "2024-03-01 10:03:00", "2024-03-01 10:20:00", "2024-03-01 10:25:00", 
+             "2024-03-01 10:07:00", "2024-03-01 10:30:00", "2024-03-01 10:35:00", 
+             "2024-03-01 10:40:00", "2024-03-01 10:42:00"],
+    "cluster_id": [1, 2, 3, 2, 4, 5, 1, 6, 7, 8, 9]
+}
+
+df = pd.DataFrame(data)
+
+# Convert time to datetime format
+df["time"] = pd.to_datetime(df["time"])
+
+# Find IMOs that appear in more than one cluster
+imo_cluster_counts = df.groupby("imo")["cluster_id"].nunique()
+imos_multiple_clusters = imo_cluster_counts[imo_cluster_counts > 1].index.tolist()
+
+# Filter dataframe for these IMOs
+df_filtered = df[df["imo"].isin(imos_multiple_clusters)]
+
+# Check time difference within clusters
+time_threshold = pd.Timedelta(minutes=5)  # Adjust time threshold as needed
+
+# Find clusters where these IMOs appear without a large time difference
+clusters_to_extract = set()
+for imo in imos_multiple_clusters:
+    imo_data = df_filtered[df_filtered["imo"] == imo].sort_values("time")
+    time_diff = imo_data["time"].diff().fillna(pd.Timedelta(seconds=0))  # Calculate time difference
+    if (time_diff <= time_threshold).all():  # Check if all time differences are within threshold
+        clusters_to_extract.update(imo_data["cluster_id"].unique())
+
+# Extract the clusters satisfying the condition
+df_result = df[df["cluster_id"].isin(clusters_to_extract)]
+
+print(df_result)
+
+
 
